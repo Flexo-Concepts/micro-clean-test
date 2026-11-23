@@ -3,7 +3,8 @@
 // Same setup as Flexo-Concepts/FC-HTML-Website.
 {
   "$schema": "https://unpkg.com/wrangler@4.42.0/config-schema.json",
-  "name": "micro-clean-website",
+  // Must match the Worker's name in the Cloudflare dashboard, or builds fail.
+  "name": "micro-clean-test",
   "compatibility_date": "2026-10-01",
   "assets": {
     "directory": "./public",
@@ -18,7 +19,7 @@
   // Never use Access scope "All traffic": it would put the login on micro-clean.com itself.
   "workers_dev": false,
   "preview_urls": true,
-  // Every branch gets its own login-protected preview (<branch>-micro-clean-website.flexo-concepts.workers.dev),
+  // Every branch gets its own login-protected preview (<branch>-micro-clean-test.flexo-concepts.workers.dev),
   // built by Workers Builds with `wrangler preview`. Required by Cloudflare even when empty.
   "previews": {}
 }
