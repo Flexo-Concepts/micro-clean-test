@@ -1,0 +1,24 @@
+// Cloudflare Workers config for micro-clean.com.
+// Static assets only: no Worker script, no build step. Cloudflare serves the files in ./public as-is.
+// Same setup as Flexo-Concepts/FC-HTML-Website.
+{
+  "$schema": "https://unpkg.com/wrangler@4.42.0/config-schema.json",
+  "name": "micro-clean-website",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    // /slug/ serves public/slug/index.html; /slug redirects to /slug/
+    "html_handling": "auto-trailing-slash",
+    // unknown URLs get public/404.html with a real 404 status
+    "not_found_handling": "404-page"
+  },
+  // micro-clean.com and www.micro-clean.com are attached as Custom Domains in the Cloudflare dashboard, never here.
+  // No plain test address. Preview addresses stay ON, protected by Cloudflare Access
+  // (Worker Access, scope "Previews only", @flexoconcepts.com login), and public/_headers adds noindex on *.workers.dev.
+  // Never use Access scope "All traffic": it would put the login on micro-clean.com itself.
+  "workers_dev": false,
+  "preview_urls": true,
+  // Every branch gets its own login-protected preview (<branch>-micro-clean-website.flexo-concepts.workers.dev),
+  // built by Workers Builds with `wrangler preview`. Required by Cloudflare even when empty.
+  "previews": {}
+}
