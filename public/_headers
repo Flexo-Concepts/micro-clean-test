@@ -1,0 +1,5 @@
+# Test-site protection (layer 2): never let the temporary Cloudflare addresses be indexed.
+# Matches https://<worker>.<account>.workers.dev and preview URLs (https://<version>-<worker>.<account>.workers.dev).
+# These rules only apply on workers.dev, so nothing here changes www.flexoconcepts.com after launch.
+https://:worker.:account.workers.dev/*
+  X-Robots-Tag: noindex, nofollow
