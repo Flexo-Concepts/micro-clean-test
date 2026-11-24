@@ -1,11 +1,12 @@
 # Changelog
 
-## 2026-11-24 - New MicroClean Support page and Contact Us in the menu
-- New page at `/support/` (`public/support/index.html`), built from the Claude Design "MicroClean Support Page Redesign": hero, "How MicroClean support works" in three steps, the anilox cleaning supplies / accessories callout and a closing call to action. It uses the site's existing header, menu and tracking.
+## 2026-11-24 - New MicroClean Support homepage; support form moves to Contact Us
+- The micro-clean.com homepage (`public/index.html`) is now the Claude Design "MicroClean Support Page Redesign": hero, "How MicroClean support works" in three steps, the anilox cleaning supplies / accessories callout and a closing call to action. It keeps the site's existing header and tracking.
 - Both "Submit a support request" buttons open the MicroClean support form (`https://go.flexo.biz/l/199862/2022-01-27/fh2xmm`) in a new tab. "See accessories" links to `https://www.flexoconcepts.com/accessories/`.
-- The design's "Since January 2022, every MicroClean support request starts with this web form." line was left out, to match the homepage update.
-- Canonical on the new page points to `https://www.flexoconcepts.com/microclean_support/`, like the homepage, so micro-clean.com doesn't compete with flexoconcepts.com in search.
-- The menu on both pages is now **Home** + **Contact Us**. Contact Us links to the micro-clean.com homepage, which has the support form.
+- The design's "Since January 2022, every MicroClean support request starts with this web form." line was left out, to match the support-form page.
+- The previous homepage, the page with the embedded support form, moves unchanged to `/contact-us/` (`public/contact-us/index.html`).
+- The menu on both pages is now **Home** (links to `/`) + **Contact Us** (links to `/contact-us/`).
+- Canonical tags on both pages still point to `https://www.flexoconcepts.com/microclean_support/`, so micro-clean.com doesn't compete with flexoconcepts.com in search.
 
 ## 2026-11-24 - Simpler menu, no search, no footer
 - The top menu (desktop, sticky and mobile) now has only **Home**, which still links to `https://www.flexoconcepts.com/`, with no search icon or search box. Applications, Products, Resources, About Us, MicroClean, Contact Us and Order Online were removed, along with the search icon and the three search boxes (desktop, sticky and mobile).
