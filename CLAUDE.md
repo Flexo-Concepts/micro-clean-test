@@ -29,7 +29,7 @@ The static HTML site for **micro-clean.com**, hosted on **Cloudflare Workers sta
 ## Conventions
 
 - New pages and redesigns from Claude Design follow the FC fragment contract (Flexo Concepts Design System → *flexoconcepts.com — website patterns*): one wrapper class, one scoped `<style>`, no JS (native `<details>`), one H1, every image `alt`'d.
-- Pages are lean, hand-written HTML (no Avada, Fusion Builder, jQuery or WordPress plugins): `public/index.html` (homepage, from the Claude Design "MicroClean Support Page Redesign") and `public/contact-us/index.html` (the Pardot support form). Each page has one inline `<style>`, the shared header (logo + Home / Contact Us), its SEO tags and structured data, GA4 `G-KSGE957FQY`, and the kept tracking (LinkedIn, Meta, Yahoo, Propensity, Pardot, Salesforce chat; Hotjar removed). Keep new pages to the same pattern.
+- Pages are lean, hand-written HTML (no Avada, Fusion Builder, jQuery or WordPress plugins): `public/index.html` (homepage, from the Claude Design "MicroClean Support Page Redesign") and `public/contact-us/index.html` (the Pardot support form). Each page has one inline `<style>`, the shared header (logo + Home / Contact Us), its SEO tags and structured data, GA4 `G-KSGE957FQY`, and the kept tracking (Yahoo pixel and Pardot only; Hotjar, LinkedIn, Meta, Propensity and the Salesforce chat were removed on purpose, so don't add them back). Keep new pages to the same pattern.
 - Links to other Flexo Concepts pages are absolute `https://www.flexoconcepts.com/...` URLs; those pages don't exist on micro-clean.com.
 - Images: `public/assets/uploads/YYYY/MM/*.webp`, under 25 MiB per file.
 - Commit messages and PR bodies in plain language for a marketing reader.

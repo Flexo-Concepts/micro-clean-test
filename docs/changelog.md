@@ -2,9 +2,9 @@
 
 ## 2026-11-24 - Faster pages: Avada / Fusion Builder removed
 - Both pages are rebuilt as lean, hand-written HTML. They no longer load Avada's stylesheet (about 1.3 MB, 194 KB compressed and render-blocking), the Fusion Builder script bundle (705 KB), jQuery and jQuery Migrate, WP Rocket lazy-loading or the WPML language switcher. The small "English" button at the bottom of the pages is gone with it.
-- Each page now loads one inline stylesheet, Open Sans 400/700 once from Google Fonts (with preconnect, instead of twice), and its tracking. HTML size: homepage 64 KB → 24 KB, Contact Us 57 KB → 12 KB.
-- Kept unchanged: page copy and layout, the support form, titles, descriptions, canonicals, structured data, favicons, GA4 `G-KSGE957FQY`, LinkedIn, Meta, Yahoo, Propensity, Pardot tracking and the Salesforce chat button (now loaded once, straight from Salesforce).
-- **Hotjar removed:** the Flexo Concepts Hotjar code (site ID 5259572) is taken off both pages, so micro-clean.com visits no longer go into Flexo Concepts' Hotjar account.
+- Each page now loads one inline stylesheet, Open Sans 400/700 once from Google Fonts (with preconnect, instead of twice), GA4, the Yahoo pixel and Pardot tracking, and no other JavaScript. HTML size: homepage 64 KB → 24 KB, Contact Us 57 KB → 12 KB.
+- Kept unchanged: page copy and layout, the support form, titles, descriptions, canonicals, structured data, favicons, GA4 `G-KSGE957FQY`, the Yahoo pixel and Pardot tracking.
+- **Tracking removed:** Hotjar (site ID 5259572), the LinkedIn Insight Tag (partner 3771722), the Meta pixel (25378122245118744), the Propensity tracker and the Salesforce chat button are taken off both pages, so micro-clean.com visits no longer go into those Flexo Concepts accounts.
 - The header is now simple HTML: Flexo Concepts logo + Home / Contact Us, sticky on desktop, with the current page underlined in orange. The MicroClean logo on Contact Us gets alt text.
 - The old theme files stay in `public/assets/` for now but are no longer used; they can go in the planned cleanup PR.
 
