@@ -2,7 +2,7 @@
 
 ## 2026-11-24 - New MicroClean Support homepage; support form moves to Contact Us
 - The micro-clean.com homepage (`public/index.html`) is now the Claude Design "MicroClean Support Page Redesign": hero, "How MicroClean support works" in three steps, the anilox cleaning supplies / accessories callout and a closing call to action. It keeps the site's existing header and tracking.
-- Both "Submit a support request" buttons open the MicroClean support form (`https://go.flexo.biz/l/199862/2022-01-27/fh2xmm`) in a new tab. "See accessories" links to `https://www.flexoconcepts.com/accessories/`.
+- Both "Submit a support request" buttons go to the support-form page at `/contact-us/` (same tab). "See accessories" links to `https://www.flexoconcepts.com/accessories/`.
 - The design's "Since January 2022, every MicroClean support request starts with this web form." line was left out, to match the support-form page.
 - The previous homepage, the page with the embedded support form, moves unchanged to `/contact-us/` (`public/contact-us/index.html`).
 - The menu on both pages is now **Home** (links to `/`) + **Contact Us** (links to `/contact-us/`).
