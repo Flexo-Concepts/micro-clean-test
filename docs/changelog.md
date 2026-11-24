@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-24 - Homepage search uses flexoconcepts.com
+- The three search boxes on the homepage now send searches to `https://www.flexoconcepts.com/`, because micro-clean.com has no search of its own (PR #6).
+
 ## 2026-11-24 - Support intro updated
 - Removed the outdated sentence "Due to our hybrid work environment, as of January 2022 all MicroClean support requests must be initiated through this web form." from the paragraph under "Support". The paragraph now starts with "Please provide the required information below."
 - The page's search description, social-share description and structured data used the same sentence, so they now use the remaining paragraph text instead.
