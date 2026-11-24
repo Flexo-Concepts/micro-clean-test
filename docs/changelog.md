@@ -1,12 +1,13 @@
 # Changelog
 
 ## 2026-11-24 - New MicroClean Support homepage; support form moves to Contact Us
-- The micro-clean.com homepage (`public/index.html`) is now the Claude Design "MicroClean Support Page Redesign": hero, "How MicroClean support works" in three steps, the anilox cleaning supplies / accessories callout and a closing call to action. It keeps the site's existing header and tracking.
+- The micro-clean.com homepage (`public/index.html`) is now the Claude Design "MicroClean Support Page Redesign": hero, "How MicroClean support works" in three steps, the anilox cleaning supplies / accessories callout and a closing call to action. It keeps the site's existing header.
 - Both "Submit a support request" buttons go to the support-form page at `/contact-us/` (same tab). "See accessories" links to `https://www.flexoconcepts.com/accessories/`.
 - The design's "Since January 2022, every MicroClean support request starts with this web form." line was left out, to match the support-form page.
 - The previous homepage, the page with the embedded support form, moves unchanged to `/contact-us/` (`public/contact-us/index.html`).
 - The menu on both pages is now **Home** (links to `/`) + **Contact Us** (links to `/contact-us/`).
 - Canonical tags on both pages still point to `https://www.flexoconcepts.com/microclean_support/`, so micro-clean.com doesn't compete with flexoconcepts.com in search.
+- **Google Analytics removed:** Google Tag Manager (GTM-5JTCPFW), the GA4 tag (G-BFKJFN3MY9) and the GTM-for-WordPress helper scripts are removed from both pages, so micro-clean.com is no longer tracked in Flexo Concepts' Google Analytics. HotJar, LinkedIn, Meta, Propensity, Pardot and the Service Cloud chat snippets are unchanged.
 
 ## 2026-11-24 - Simpler menu, no search, no footer
 - The top menu (desktop, sticky and mobile) now has only **Home**, which still links to `https://www.flexoconcepts.com/`, with no search icon or search box. Applications, Products, Resources, About Us, MicroClean, Contact Us and Order Online were removed, along with the search icon and the three search boxes (desktop, sticky and mobile).
