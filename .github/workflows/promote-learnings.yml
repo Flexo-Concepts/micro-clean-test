@@ -1,0 +1,810 @@
+# =============================================================================
+# promote-learnings.yml — FC knowledge-capture promotion cadence
+# =============================================================================
+# Lives in each CODE repo (.github/workflows/). Three triggers, one workflow:
+#
+#   1) PUSH to a feature branch (only when CLAUDE.md changed in the push)
+#        -> extracts the "## Lessons Learned" section from repo-root CLAUDE.md
+#        -> UPSERTS a WIP draft entry in fc-wiki (status: draft), committed
+#           DIRECTLY to fc-wiki main. fc-wiki main is unprotected, so drafts
+#           flow through with no PR churn (decided by Greg, 2026-07-21:
+#           "auto-merge draft entries only"). Skips untouched-lessons pushes
+#           (payload hash) and NEVER overwrites a canonical entry.
+#
+#   2) PULL REQUEST merged into main (only when the PR changed CLAUDE.md)
+#        -> mechanical finalize: opens a PR on fc-wiki that flips the entry
+#           draft -> canonical, stamps the merge SHA, drops the (WIP) marker.
+#           THAT PR is the single human review gate — the light curation pass
+#           (dedupe/polish into the doc-set) happens on its branch before merge.
+#           Re-runs build ON TOP of curation commits (never force-pushed away).
+#
+#   3) PULL REQUEST merged into main (only when the PR changed docs/wiki/*.md)
+#        -> doc-set sync: upserts each changed doc's wiki twin, committed
+#           DIRECTLY to fc-wiki main. Twins are DRAFT until reviewed (Greg's
+#           rule, 2026-08-12): new twins land as status: draft; when a
+#           CANONICAL twin's content changes it drops back to draft, stamped
+#           previously_canonical: <date> — it was reviewed once, this update
+#           isn't yet. Flipping draft -> canonical stays the wiki's normal
+#           review (update_wiki_entry / reviewed fc-wiki PR). Deletions and
+#           renames are NOT auto-synced — the run summary lists them for
+#           manual wiki cleanup. A twin's `submitter` is stamped once, at
+#           creation, and preserved on later syncs (2026-09-13 — before this,
+#           every sync re-stamped it with the merged PR's author); `updated_by`
+#           records who merged the syncing PR.
+#
+# INSTALL (per code repo — pilot on ONE repo first):
+#   1. Copy this file to .github/workflows/promote-learnings.yml
+#   2. Create a FINE-GRAINED PAT: owner = Flexo-Concepts, repository access =
+#      "Only select repositories" -> fc-wiki, permissions = Contents: Read+Write,
+#      Pull requests: Read+Write. Store it as an Actions secret named
+#      FC_WIKI_TOKEN (repo Settings -> Secrets and variables -> Actions).
+#      NEVER commit the token itself.
+#   3. REQUIRED: Actions *variable* FC_WIKI_TOPIC = the wiki topic folder for
+#      this project. REUSE an existing raw/tech slug (workbench-development,
+#      receiving-doc-intake, ...) — near-synonym topics fragment search
+#      (fc-wiki CONTRIBUTING.md). The job fails fast if this is unset.
+#   4. Optional: Actions variable FC_WIKI_OWNER = display name for the entry's
+#      owner: field (routes fc-wiki staleness nags). Default: the pushing user.
+#   5. Ensure repo-root CLAUDE.md contains a "## Lessons Learned" section.
+#   6. After this file lands on main, merge main into every ACTIVE feature
+#      branch (git switch <branch> && git merge main) — push-triggered
+#      workflows run the copy at the pushed commit, so branches that predate
+#      the install produce no drafts until they pick up the file. Their merges
+#      still finalize correctly, just without draft history.
+#   7. If the repo is ever RENAMED, the entry key (which embeds the repo name)
+#      changes and in-flight drafts are stranded under the old key — finish or
+#      finalize open branches before renaming, or hand-migrate the old entry.
+#      (Doc-set twins strand the same way — re-key them too.)
+#   8. Optional (doc-set): seed docs/wiki/ with the FC four-doc set —
+#      overview-intent, user-guide, admin-guide, dev-guide (stub templates live
+#      in the wiki entry "FC app doc-set standard", tech/wiki-usage). The
+#      docset job only fires when a merged PR touches docs/wiki/*.md, so repos
+#      without the folder are unaffected.
+#
+# GUARANTEES:
+#   - Never touches Salesforce or production. Read-only on THIS repo
+#     (permissions block below); writes only to Flexo-Concepts/fc-wiki via
+#     FC_WIKI_TOKEN, which is scoped to fc-wiki alone.
+#   - Spikes are exempt by construction: local-only repos have no Actions.
+#   - Deterministic entry identity:
+#       raw/tech/<topic>/<create-date>-<repo>--<branch>--learnings.md
+#       raw/tech/<topic>/<create-date>-<repo>--doc--<docname>.md   (doc-set)
+#     Create -> update -> finalize all target the SAME file; it is never
+#     renamed or moved (fc-wiki rule: raw/ files must not move by hand).
+#   - fc-wiki-side frontmatter added out-of-band (summary, helpful_votes,
+#     contributors, review_by, ...) is PRESERVED across upserts — only the
+#     fields this workflow owns are regenerated.
+# =============================================================================
+name: Promote learnings to FC wiki
+
+on:
+  push:
+    branches-ignore: [main]
+    paths: ["CLAUDE.md"]
+  pull_request:
+    types: [closed]
+    paths: ["CLAUDE.md", "docs/wiki/**"]
+
+# This repo's token stays read-only (pull-requests: read is needed only to
+# double-check a merged PR's changed files); all fc-wiki writes use FC_WIKI_TOKEN.
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  WIKI_REPO: Flexo-Concepts/fc-wiki
+  WIKI_DEPT: tech
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # JOB 1 — push to feature branch: upsert the WIP draft on fc-wiki main
+  # ---------------------------------------------------------------------------
+  draft:
+    name: Upsert WIP wiki draft
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote-learnings-draft-${{ github.ref_name }}
+      cancel-in-progress: true # only the newest push per branch matters
+    steps:
+      - name: Check out this repo (pushed branch)
+        uses: actions/checkout@v4
+        with:
+          path: src
+
+      - name: Extract "Lessons Learned" from CLAUDE.md
+        id: extract
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/lessons.md"
+          if [ ! -f src/CLAUDE.md ]; then
+            echo "No repo-root CLAUDE.md — nothing to promote." >> "$GITHUB_STEP_SUMMARY"
+            echo "has_lessons=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Section = from "## Lessons Learned" to the next "## " heading.
+          # Fence-aware: "## " lines inside ``` / ~~~ code blocks don't end the
+          # section. CRLF normalized so \r never leaks into wiki entries.
+          awk '/^(```|~~~)/ {fence=!fence}
+               !f && !fence && /^##[[:space:]]+[Ll]essons [Ll]earned/ {f=1; next}
+               f && !fence && /^##[[:space:]]/ {f=0}
+               f' src/CLAUDE.md | tr -d '\r' > "$out"
+          if grep -q '[^[:space:]]' "$out"; then
+            echo "has_lessons=true" >> "$GITHUB_OUTPUT"
+          else
+            echo '"## Lessons Learned" section missing or empty — nothing to promote.' >> "$GITHUB_STEP_SUMMARY"
+            echo "has_lessons=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require FC_WIKI_TOKEN
+        if: steps.extract.outputs.has_lessons == 'true'
+        env:
+          TOKEN_SET: ${{ secrets.FC_WIKI_TOKEN != '' }}
+        run: |
+          if [ "$TOKEN_SET" != "true" ]; then
+            echo "::error::Actions secret FC_WIKI_TOKEN is not set on this repo — see the INSTALL notes at the top of .github/workflows/promote-learnings.yml"
+            exit 1
+          fi
+
+      - name: Check out fc-wiki
+        if: steps.extract.outputs.has_lessons == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Flexo-Concepts/fc-wiki
+          token: ${{ secrets.FC_WIKI_TOKEN }}
+          path: wiki
+
+      - name: Upsert draft entry on fc-wiki main
+        if: steps.extract.outputs.has_lessons == 'true'
+        env:
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          TOPIC_RAW: ${{ vars.FC_WIKI_TOPIC }}
+          OWNER_OVERRIDE: ${{ vars.FC_WIKI_OWNER }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          slugify() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//'; }
+
+          # --- names, slugs, guards -------------------------------------------
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          REPO_SLUG=$(slugify "$REPO_NAME")
+          BRANCH_SLUG=$(slugify "$BRANCH")
+          # Branch names with no [a-z0-9] bytes slug to empty — fall back to a
+          # deterministic hash so such branches don't all collide on one entry.
+          [ -n "$BRANCH_SLUG" ] || BRANCH_SLUG="branch-$(printf '%s' "$BRANCH" | sha256sum | cut -c1-8)"
+          if [ -z "$TOPIC_RAW" ]; then
+            echo "::error::Actions variable FC_WIKI_TOPIC is not set. Set it to an existing raw/tech topic slug (reuse before creating — near-synonym topics fragment search; see fc-wiki CONTRIBUTING.md)."
+            exit 1
+          fi
+          TOPIC=$(slugify "$TOPIC_RAW")
+          if [ -z "$TOPIC" ]; then
+            echo "::error::FC_WIKI_TOPIC ('$TOPIC_RAW') contains no [a-z0-9] characters — fix the Actions variable."
+            exit 1
+          fi
+          # Double-dash joins are collision-proof: slugify squeezes dashes, so
+          # no slug can itself contain "--" (repo "a-b"+branch "c" can't alias
+          # repo "a"+branch "b-c").
+          KEY="${REPO_SLUG}--${BRANCH_SLUG}--learnings"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          TODAY=$(date -u +%F)
+          SAFE_BRANCH="${BRANCH//\"/}"
+          # Map GitHub login -> display name (fc-wiki person search matches
+          # names from data/people.json, not logins).
+          case "$ACTOR" in
+            ghowellfc)    SUBMITTER="Greg Howell";;
+            philryan29)   SUBMITTER="Phil Ryan";;
+            lhowell-fc)   SUBMITTER="Landon Howell";;
+            rpsheehyFC)   SUBMITTER="Ryan Sheehy";;
+            annatedeschi) SUBMITTER="Anna Tedeschi";;
+            *)            SUBMITTER="$ACTOR";;
+          esac
+          OWNER_NAME="${OWNER_OVERRIDE:-$SUBMITTER}"
+          # FC_WIKI_OWNER is free text — strip chars that would break the
+          # double-quoted YAML scalar it is emitted into.
+          OWNER_NAME="${OWNER_NAME//\"/}"; OWNER_NAME="${OWNER_NAME//\\/}"
+
+          # --- locate the entry (work inside the wiki clone) ------------------
+          cd wiki
+          git config user.name "fc-promote-learnings[bot]"
+          git config user.email "actions+fc-wiki@flexoconcepts.com"
+          RELDIR="raw/${WIKI_DEPT}/${TOPIC}"
+          mkdir -p "$RELDIR"
+          PAYLOAD_SHA=$(sha256sum "$RUNNER_TEMP/lessons.md" | cut -d' ' -f1)
+
+          # Locate the entry and evaluate ALL guards against the CURRENT tree.
+          # Re-run inside the push-retry loop after a reset, so the canonical /
+          # no-change guards and the preserved keys always reflect the main we
+          # are actually about to push to.
+          locate_and_guard() {
+            # Date-anchored so another branch's entry can never suffix-match ours.
+            EXISTING=$(find "$RELDIR" -maxdepth 1 -name "????-??-??-${KEY}.md" | sort | head -n 1)
+            if [ -n "$EXISTING" ]; then
+              # Never overwrite a canonical entry from the draft path — a
+              # finalized entry only changes via a reviewed fc-wiki PR.
+              EXISTING_STATUS=$(tr -d '\r' < "$EXISTING" | awk '/^---[[:space:]]*$/ {c++; next} c==1 && /^status:/ {sub(/^status:[[:space:]]*/, ""); print; exit}')
+              if [ "$EXISTING_STATUS" = "canonical" ]; then
+                {
+                  echo "### Skipped — entry already canonical"
+                  echo "- \`${EXISTING}\` is \`status: canonical\` on fc-wiki main."
+                  echo "- Draft upserts never overwrite canonical entries (the finalize PR is the review gate)."
+                  echo "- To update it, open a PR on ${WIKI_REPO}, or merge a new code-repo PR to trigger a fresh finalize PR."
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              # Skip pushes whose lessons payload is byte-identical (e.g. a
+              # CLAUDE.md edit outside the lessons section) — no junk commits.
+              STORED_SHA=$( (grep -m1 '^lessons_sha256:' "$EXISTING" || true) | tr -d '\r' | sed 's/^lessons_sha256:[[:space:]]*//')
+              if [ "$STORED_SHA" = "$PAYLOAD_SHA" ]; then
+                echo "Lessons unchanged since last promotion — no wiki update needed." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              RELFILE="$EXISTING"
+              SUBMITTED=$( (grep -m1 '^submitted:' "$EXISTING" || true) | tr -d '\r' | sed "s/^submitted:[[:space:]]*//; s/^'//; s/'\$//")
+              [ -n "$SUBMITTED" ] || SUBMITTED="$NOW_ISO"
+              CHANGE_NOTE="Auto-updated from push ${SHORT_SHA} to ${SAFE_BRANCH} by ${ACTOR}."
+              # Preserve every frontmatter key we don't own — fc-wiki's own
+              # tooling adds summary/contributors/helpful_votes/stale_votes/
+              # review_by/owner out-of-band; regenerating would delete them.
+              tr -d '\r' < "$EXISTING" | awk '
+                BEGIN { n = split("title department topic status submitted submitter tags source updated updated_by change_note lessons_sha256", a, " "); for (i = 1; i <= n; i++) owned[a[i]] = 1 }
+                /^---[[:space:]]*$/ { c++; next }
+                c != 1 { next }
+                /^[^[:space:]]/ { key = $0; sub(/:.*$/, "", key); skip = (key in owned) }
+                !skip { print }
+              ' > "$RUNNER_TEMP/preserved.txt"
+            else
+              RELFILE="${RELDIR}/${TODAY}-${KEY}.md"
+              SUBMITTED="$NOW_ISO"
+              CHANGE_NOTE="Draft created from first lessons push on ${SAFE_BRANCH} by ${ACTOR}."
+              : > "$RUNNER_TEMP/preserved.txt"
+            fi
+          }
+
+          write_entry() {
+            {
+              printf -- '---\n'
+              printf 'title: "Learnings — %s / %s (WIP)"\n' "$REPO_NAME" "$SAFE_BRANCH"
+              printf 'department: %s\n' "$WIKI_DEPT"
+              printf 'topic: %s\n' "$TOPIC"
+              printf 'status: draft\n'
+              printf 'submitted: %s\n' "$SUBMITTED"
+              printf 'submitter: %s\n' "$SUBMITTER"
+              printf 'tags:\n  - learnings\n  - wip\n  - %s\n' "$REPO_SLUG"
+              printf 'source: >-\n  Auto-promoted from %s CLAUDE.md "Lessons Learned" by the\n  promote-learnings Action (push to %s).\n' "$REPO_NAME" "$SAFE_BRANCH"
+              printf 'updated: %s\n' "$NOW_ISO"
+              printf 'updated_by: promote-learnings action (%s)\n' "$ACTOR"
+              printf 'change_note: "%s"\n' "$CHANGE_NOTE"
+              printf 'lessons_sha256: %s\n' "$PAYLOAD_SHA"
+              if ! grep -q '^owner:' "$RUNNER_TEMP/preserved.txt"; then
+                printf 'owner: "%s"\n' "$OWNER_NAME"
+              fi
+              cat "$RUNNER_TEMP/preserved.txt"
+              printf -- '---\n\n'
+              printf '# Learnings — %s / %s (WIP)\n\n' "$REPO_NAME" "$SAFE_BRANCH"
+              printf '> **Live WIP mirror.** Auto-promoted from [CLAUDE.md on %s](%s/blob/%s/CLAUDE.md)\n' "$SAFE_BRANCH" "$REPO_URL" "$BRANCH"
+              printf '> — last push %s by %s. Consolidated and reviewed when the branch merges.\n\n' "$SHORT_SHA" "$ACTOR"
+              printf '<!-- lessons -->\n'
+              cat "$RUNNER_TEMP/lessons.md"
+            } > "$1"
+          }
+
+          locate_and_guard
+          write_entry "$RELFILE"
+
+          git add "$RELFILE"
+          if git diff --cached --quiet; then
+            echo "Entry identical — nothing to commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "draft: ${REPO_NAME}/${SAFE_BRANCH} learnings @ ${SHORT_SHA}"
+          # Direct push to main (drafts auto-merge). On a race (e.g. fc-wiki's
+          # enrich Action committed between our checkout and push), rebase; if
+          # the rebase conflicts, reset to the new main and regenerate — the
+          # entry is deterministic, so regeneration is always safe.
+          ok=false
+          for i in 1 2 3; do
+            if git push origin main; then ok=true; break; fi
+            if ! git pull --rebase origin main; then
+              git rebase --abort 2>/dev/null || true
+              git reset --hard origin/main
+              # Re-evaluate ALL guards against the new main: the racing commit
+              # may have finalized this entry (never demote it) or added
+              # frontmatter keys we must preserve.
+              locate_and_guard
+              write_entry "$RELFILE"
+              git add "$RELFILE"
+              git diff --cached --quiet || git commit -m "draft: ${REPO_NAME}/${SAFE_BRANCH} learnings @ ${SHORT_SHA}"
+            fi
+          done
+          "$ok" || { echo "Push to fc-wiki failed after 3 attempts" >&2; exit 1; }
+
+          {
+            echo "### WIP draft upserted"
+            echo "- Entry: [\`${RELFILE}\`](https://github.com/${WIKI_REPO}/blob/main/${RELFILE})"
+            echo "- Status: \`draft\` (auto-merged; review happens at finalize)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # JOB 2 — PR merged into main: open the finalize PR on fc-wiki (review gate)
+  # ---------------------------------------------------------------------------
+  finalize:
+    name: Open finalize PR on fc-wiki
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote-learnings-finalize-${{ github.event.pull_request.head.ref }}
+      cancel-in-progress: false # never cancel a finalize
+    steps:
+      - name: Check out merged result
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          path: src
+
+      - name: Extract "Lessons Learned" from merged CLAUDE.md
+        id: extract
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/lessons.md"
+          : > "$out"
+          if [ -f src/CLAUDE.md ]; then
+            awk '/^(```|~~~)/ {fence=!fence}
+                 !f && !fence && /^##[[:space:]]+[Ll]essons [Ll]earned/ {f=1; next}
+                 f && !fence && /^##[[:space:]]/ {f=0}
+                 f' src/CLAUDE.md | tr -d '\r' > "$out"
+          fi
+          if grep -q '[^[:space:]]' "$out"; then
+            echo "has_lessons=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_lessons=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require FC_WIKI_TOKEN
+        env:
+          TOKEN_SET: ${{ secrets.FC_WIKI_TOKEN != '' }}
+        run: |
+          if [ "$TOKEN_SET" != "true" ]; then
+            echo "::error::Actions secret FC_WIKI_TOKEN is not set on this repo — see the INSTALL notes at the top of .github/workflows/promote-learnings.yml"
+            exit 1
+          fi
+
+      - name: Check out fc-wiki
+        uses: actions/checkout@v4
+        with:
+          repository: Flexo-Concepts/fc-wiki
+          token: ${{ secrets.FC_WIKI_TOKEN }}
+          path: wiki
+
+      - name: Build finalize branch and open PR
+        env:
+          GH_TOKEN: ${{ secrets.FC_WIKI_TOKEN }}
+          CODE_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          # Attribution goes to the PR AUTHOR (submitter/owner); the merger is
+          # recorded separately in updated_by. Otherwise every canonical entry
+          # would credit whoever pressed Merge (systematically Phil).
+          ACTOR: ${{ github.event.pull_request.user.login }}
+          MERGER: ${{ github.event.pull_request.merged_by.login || github.actor }}
+          TOPIC_RAW: ${{ vars.FC_WIKI_TOPIC }}
+          OWNER_OVERRIDE: ${{ vars.FC_WIKI_OWNER }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          SRC_PR: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          HAS_LESSONS: ${{ steps.extract.outputs.has_lessons }}
+        run: |
+          set -euo pipefail
+          slugify() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//'; }
+
+          # --- names, slugs, guards (must mirror the draft job exactly) -------
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          REPO_SLUG=$(slugify "$REPO_NAME")
+          BRANCH_SLUG=$(slugify "$BRANCH")
+          [ -n "$BRANCH_SLUG" ] || BRANCH_SLUG="branch-$(printf '%s' "$BRANCH" | sha256sum | cut -c1-8)"
+          if [ -z "$TOPIC_RAW" ]; then
+            echo "::error::Actions variable FC_WIKI_TOPIC is not set. Set it to an existing raw/tech topic slug (reuse before creating — near-synonym topics fragment search; see fc-wiki CONTRIBUTING.md)."
+            exit 1
+          fi
+          TOPIC=$(slugify "$TOPIC_RAW")
+          if [ -z "$TOPIC" ]; then
+            echo "::error::FC_WIKI_TOPIC ('$TOPIC_RAW') contains no [a-z0-9] characters — fix the Actions variable."
+            exit 1
+          fi
+          KEY="${REPO_SLUG}--${BRANCH_SLUG}--learnings"
+          SHORT_MERGE="${MERGE_SHA:0:7}"
+          NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          TODAY=$(date -u +%F)
+          SAFE_BRANCH="${BRANCH//\"/}"
+          case "$ACTOR" in
+            ghowellfc)    SUBMITTER="Greg Howell";;
+            philryan29)   SUBMITTER="Phil Ryan";;
+            lhowell-fc)   SUBMITTER="Landon Howell";;
+            rpsheehyFC)   SUBMITTER="Ryan Sheehy";;
+            annatedeschi) SUBMITTER="Anna Tedeschi";;
+            *)            SUBMITTER="$ACTOR";;
+          esac
+          OWNER_NAME="${OWNER_OVERRIDE:-$SUBMITTER}"
+          # FC_WIKI_OWNER is free text — strip chars that would break the
+          # double-quoted YAML scalar it is emitted into.
+          OWNER_NAME="${OWNER_NAME//\"/}"; OWNER_NAME="${OWNER_NAME//\\/}"
+
+          # --- get onto the finalize branch BEFORE reading/writing anything ---
+          # Base by PR STATE, not branch existence: an open finalize PR may
+          # carry human curation commits (build on them; plain push later). A
+          # leftover branch with NO open PR is stale — rejected or already
+          # merged — and is cut fresh from main (force-pushed later; nothing on
+          # it needs preserving). No "|| true" on the lookup: if it fails we
+          # stop rather than risk overwriting curation we couldn't see.
+          cd wiki
+          git config user.name "fc-promote-learnings[bot]"
+          git config user.email "actions+fc-wiki@flexoconcepts.com"
+          FIN_BRANCH="finalize/${KEY}"
+          OPEN_PR=$(gh pr list --repo "$WIKI_REPO" --head "$FIN_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$OPEN_PR" ]; then
+            git fetch origin "refs/heads/${FIN_BRANCH}"
+            git switch -c "$FIN_BRANCH" FETCH_HEAD
+          else
+            git switch -c "$FIN_BRANCH"
+          fi
+
+          RELDIR="raw/${WIKI_DEPT}/${TOPIC}"
+          mkdir -p "$RELDIR"
+          EXISTING=$(find "$RELDIR" -maxdepth 1 -name "????-??-??-${KEY}.md" | sort | head -n 1)
+
+          # Belt-and-braces (paths filter can misfire on >300-file PRs): when
+          # there is no draft to finalize, only mint a NEW canonical entry if
+          # this PR really changed CLAUDE.md. Uses the code repo's own token.
+          if [ -z "$EXISTING" ]; then
+            CHANGED=$(GH_TOKEN="$CODE_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/pulls/${SRC_PR}/files" --paginate --jq '.[].filename' || true)
+            if [ -n "$CHANGED" ] && ! grep -qx 'CLAUDE.md' <<< "$CHANGED"; then
+              echo "PR #${SRC_PR} did not change CLAUDE.md and no draft exists — nothing to finalize." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+
+          # --- body: merged CLAUDE.md lessons > existing draft body > skip ----
+          BODY="$RUNNER_TEMP/body.md"
+          if [ "$HAS_LESSONS" = "true" ]; then
+            cp "$RUNNER_TEMP/lessons.md" "$BODY"
+          elif [ -n "$EXISTING" ]; then
+            # Drafts carry a "<!-- lessons -->" marker so we can lift the pure
+            # lessons payload without the generated H1/WIP blockquote.
+            tr -d '\r' < "$EXISTING" | awk 'f {print} /^<!-- lessons -->$/ {f=1}' > "$BODY"
+            if ! grep -q '[^[:space:]]' "$BODY"; then
+              tr -d '\r' < "$EXISTING" | awk 'p {print} /^---$/ {if (++c == 2) p = 1}' > "$BODY"
+            fi
+            if ! grep -q '[^[:space:]]' "$BODY"; then
+              echo "Draft exists but has no extractable body — nothing to finalize." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          else
+            echo "No lessons in merged CLAUDE.md and no draft exists — nothing to finalize." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          PAYLOAD_SHA=$(sha256sum "$BODY" | cut -d' ' -f1)
+
+          # Idempotence: a re-run or redelivered event for an already-canonical
+          # entry with identical lessons is a no-op — no churn PRs to close.
+          if [ -n "$EXISTING" ]; then
+            EX_STATUS=$(tr -d '\r' < "$EXISTING" | awk '/^---[[:space:]]*$/ {c++; next} c==1 && /^status:/ {sub(/^status:[[:space:]]*/, ""); print; exit}')
+            EX_SHA=$( (grep -m1 '^lessons_sha256:' "$EXISTING" || true) | tr -d '\r' | sed 's/^lessons_sha256:[[:space:]]*//')
+            if [ "$EX_STATUS" = "canonical" ] && [ "$EX_SHA" = "$PAYLOAD_SHA" ]; then
+              echo "Entry already canonical with identical lessons — nothing to finalize." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+
+          if [ -n "$EXISTING" ]; then
+            RELFILE="$EXISTING"
+            SUBMITTED=$( (grep -m1 '^submitted:' "$EXISTING" || true) | tr -d '\r' | sed "s/^submitted:[[:space:]]*//; s/^'//; s/'\$//")
+            [ -n "$SUBMITTED" ] || SUBMITTED="$NOW_ISO"
+          else
+            RELFILE="${RELDIR}/${TODAY}-${KEY}.md"
+            SUBMITTED="$NOW_ISO"
+          fi
+
+          # Preserve non-owned frontmatter keys (summary, votes, contributors, ...).
+          if [ -n "$EXISTING" ]; then
+            tr -d '\r' < "$EXISTING" | awk '
+              BEGIN { n = split("title department topic status submitted submitter tags source updated updated_by change_note lessons_sha256", a, " "); for (i = 1; i <= n; i++) owned[a[i]] = 1 }
+              /^---[[:space:]]*$/ { c++; next }
+              c != 1 { next }
+              /^[^[:space:]]/ { key = $0; sub(/:.*$/, "", key); skip = (key in owned) }
+              !skip { print }
+            ' > "$RUNNER_TEMP/preserved.txt"
+          else
+            : > "$RUNNER_TEMP/preserved.txt"
+          fi
+
+          {
+            printf -- '---\n'
+            printf 'title: "Learnings — %s / %s"\n' "$REPO_NAME" "$SAFE_BRANCH"
+            printf 'department: %s\n' "$WIKI_DEPT"
+            printf 'topic: %s\n' "$TOPIC"
+            printf 'status: canonical\n'
+            printf 'submitted: %s\n' "$SUBMITTED"
+            printf 'submitter: %s\n' "$SUBMITTER"
+            printf 'tags:\n  - learnings\n  - %s\n' "$REPO_SLUG"
+            printf 'source: >-\n  Consolidated from %s CLAUDE.md "Lessons Learned" on merge of\n  PR #%s into main (merge %s).\n' "$REPO_NAME" "$SRC_PR" "$SHORT_MERGE"
+            printf 'updated: %s\n' "$NOW_ISO"
+            printf 'updated_by: promote-learnings action (%s)\n' "$MERGER"
+            printf 'change_note: "Finalized on merge of %s PR #%s (merge %s); pending curation review."\n' "$REPO_NAME" "$SRC_PR" "$SHORT_MERGE"
+            printf 'lessons_sha256: %s\n' "$PAYLOAD_SHA"
+            if ! grep -q '^owner:' "$RUNNER_TEMP/preserved.txt"; then
+              printf 'owner: "%s"\n' "$OWNER_NAME"
+            fi
+            cat "$RUNNER_TEMP/preserved.txt"
+            printf -- '---\n\n'
+            printf '# Learnings — %s / %s\n\n' "$REPO_NAME" "$SAFE_BRANCH"
+            printf '> Promoted from [%s](%s) — [PR #%s](%s/pull/%s), merge %s.\n\n' "$REPO_NAME" "$REPO_URL" "$SRC_PR" "$REPO_URL" "$SRC_PR" "$SHORT_MERGE"
+            printf '<!-- lessons -->\n'
+            cat "$BODY"
+          } > "$RELFILE"
+
+          git add "$RELFILE"
+          if git diff --cached --quiet; then
+            echo "Entry already finalized and identical — nothing to do." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "finalize: ${REPO_NAME}/${SAFE_BRANCH} learnings -> canonical (PR #${SRC_PR})"
+          if [ -n "$OPEN_PR" ]; then
+            # Building on the open PR's tip: plain push — never clobber
+            # curation commits; a genuine race fails loudly (re-run to recover).
+            git push origin "$FIN_BRANCH"
+          else
+            # No open PR: any leftover remote branch is stale (rejected or
+            # already merged) — overwrite it.
+            git push --force origin "$FIN_BRANCH"
+          fi
+
+          # One finalize PR per key; if one is open, the push above updated it.
+          if [ -z "$OPEN_PR" ]; then
+            PR_URL=$(gh pr create --repo "$WIKI_REPO" \
+              --head "$FIN_BRANCH" --base main \
+              --title "Finalize learnings: ${REPO_NAME}/${SAFE_BRANCH} -> canonical" \
+              --body "$(printf 'Mechanical finalize triggered by merge of %s/pull/%s (merge %s).\n\nThis PR is the **human review gate** for the promotion cadence:\n\n- [ ] Curation pass: dedupe, polish, cross-link into the doc-set\n- [ ] Frontmatter correct (topic, tags, submitter, owner)\n- [ ] OK to publish as canonical\n\nMerging this PR flips the entry to canonical and clears it from the monthly staleness report. Any draft history for this entry is already on main (branches that predate the workflow install skip the draft stage).' "$REPO_URL" "$SRC_PR" "$SHORT_MERGE")")
+          else
+            PR_URL="https://github.com/${WIKI_REPO}/pull/${OPEN_PR}"
+          fi
+          {
+            echo "### Finalize PR ready for review"
+            echo "- fc-wiki PR: ${PR_URL}"
+            echo "- Flips \`status: draft\` -> \`canonical\` for \`${RELFILE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # JOB 3 — PR merged into main: sync the doc-set twins (docs/wiki/*.md)
+  # ---------------------------------------------------------------------------
+  docset:
+    name: Sync doc-set to FC wiki
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote-docset-main
+      cancel-in-progress: false # every merge must sync; never skip one
+    steps:
+      - name: Check out merged result
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          path: src
+
+      - name: List doc-set files changed by this PR
+        id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC_PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Ask the API rather than trusting the event's paths filter (mirrors
+          # the finalize job's belt-and-braces for >300-file PRs). Renames
+          # surface as removed+added; the removed side lands in the manual list.
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${SRC_PR}/files" --paginate \
+            --jq '.[] | select(.status != "removed") | .filename' \
+            | { grep -E '^docs/wiki/[^/]+\.md$' || true; } > "$RUNNER_TEMP/docfiles.txt"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${SRC_PR}/files" --paginate \
+            --jq '.[] | select(.status == "removed") | .filename' \
+            | { grep -E '^docs/wiki/[^/]+\.md$' || true; } > "$RUNNER_TEMP/docdeleted.txt"
+          if [ -s "$RUNNER_TEMP/docdeleted.txt" ]; then
+            {
+              echo "### Doc-set deletions are NOT auto-synced — retire the wiki twin by hand"
+              sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/docdeleted.txt"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -s "$RUNNER_TEMP/docfiles.txt" ]; then
+            echo "has_docs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No docs/wiki/*.md changes in this PR — doc-set twins already current." >> "$GITHUB_STEP_SUMMARY"
+            echo "has_docs=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require FC_WIKI_TOKEN
+        if: steps.changed.outputs.has_docs == 'true'
+        env:
+          TOKEN_SET: ${{ secrets.FC_WIKI_TOKEN != '' }}
+        run: |
+          if [ "$TOKEN_SET" != "true" ]; then
+            echo "::error::Actions secret FC_WIKI_TOKEN is not set on this repo — see the INSTALL notes at the top of .github/workflows/promote-learnings.yml"
+            exit 1
+          fi
+
+      - name: Check out fc-wiki
+        if: steps.changed.outputs.has_docs == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Flexo-Concepts/fc-wiki
+          token: ${{ secrets.FC_WIKI_TOKEN }}
+          path: wiki
+
+      - name: Upsert doc-set twins on fc-wiki main
+        if: steps.changed.outputs.has_docs == 'true'
+        env:
+          ACTOR: ${{ github.event.pull_request.user.login }}
+          MERGER: ${{ github.event.pull_request.merged_by.login || github.actor }}
+          TOPIC_RAW: ${{ vars.FC_WIKI_TOPIC }}
+          OWNER_OVERRIDE: ${{ vars.FC_WIKI_OWNER }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          SRC_PR: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          slugify() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//'; }
+
+          # --- names, slugs, guards (mirror the other jobs) -------------------
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          REPO_SLUG=$(slugify "$REPO_NAME")
+          if [ -z "$TOPIC_RAW" ]; then
+            echo "::error::Actions variable FC_WIKI_TOPIC is not set. Set it to an existing raw/tech topic slug (reuse before creating — near-synonym topics fragment search; see fc-wiki CONTRIBUTING.md)."
+            exit 1
+          fi
+          TOPIC=$(slugify "$TOPIC_RAW")
+          if [ -z "$TOPIC" ]; then
+            echo "::error::FC_WIKI_TOPIC ('$TOPIC_RAW') contains no [a-z0-9] characters — fix the Actions variable."
+            exit 1
+          fi
+          SHORT_MERGE="${MERGE_SHA:0:7}"
+          NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          TODAY=$(date -u +%F)
+          case "$ACTOR" in
+            ghowellfc)    SUBMITTER="Greg Howell";;
+            philryan29)   SUBMITTER="Phil Ryan";;
+            lhowell-fc)   SUBMITTER="Landon Howell";;
+            rpsheehyFC)   SUBMITTER="Ryan Sheehy";;
+            annatedeschi) SUBMITTER="Anna Tedeschi";;
+            *)            SUBMITTER="$ACTOR";;
+          esac
+          OWNER_NAME="${OWNER_OVERRIDE:-$SUBMITTER}"
+          OWNER_NAME="${OWNER_NAME//\"/}"; OWNER_NAME="${OWNER_NAME//\\/}"
+
+          cd wiki
+          git config user.name "fc-promote-learnings[bot]"
+          git config user.email "actions+fc-wiki@flexoconcepts.com"
+          RELDIR="raw/${WIKI_DEPT}/${TOPIC}"
+          mkdir -p "$RELDIR"
+          SYNCED="$RUNNER_TEMP/synced.txt"
+
+          # Regenerates every twin against the CURRENT wiki tree; safe to re-run
+          # inside the push-retry loop (entries are deterministic).
+          upsert_all() {
+            : > "$SYNCED"
+            while IFS= read -r SRCFILE; do
+              [ -f "../src/$SRCFILE" ] || continue   # gone in the merged tree — skip
+              BASE=$(basename "$SRCFILE" .md)
+              DOC_SLUG=$(slugify "$BASE")
+              [ -n "$DOC_SLUG" ] || DOC_SLUG="doc-$(printf '%s' "$BASE" | sha256sum | cut -c1-8)"
+              KEY="${REPO_SLUG}--doc--${DOC_SLUG}"
+              # Body = the doc minus any leading YAML frontmatter, CRLF-normalized.
+              awk 'NR==1 && /^---[[:space:]]*$/ {fm=1; next} fm && /^---[[:space:]]*$/ {fm=0; next} !fm' \
+                "../src/$SRCFILE" | tr -d '\r' > "$RUNNER_TEMP/doc-body.md"
+              grep -q '[^[:space:]]' "$RUNNER_TEMP/doc-body.md" || continue   # empty stub — nothing to publish yet
+              PAYLOAD_SHA=$(sha256sum "$RUNNER_TEMP/doc-body.md" | cut -d' ' -f1)
+              TITLE=$(awk 'sub(/^#[[:space:]]+/, ""){print; exit}' "$RUNNER_TEMP/doc-body.md")
+              [ -n "$TITLE" ] || TITLE="${REPO_NAME} — ${BASE}"
+              TITLE="${TITLE//\"/}"
+
+              EXISTING=$(find "$RELDIR" -maxdepth 1 -name "????-??-??-${KEY}.md" | sort | head -n 1)
+              if [ -n "$EXISTING" ]; then
+                STORED_SHA=$( (grep -m1 '^docs_sha256:' "$EXISTING" || true) | tr -d '\r' | sed 's/^docs_sha256:[[:space:]]*//')
+                [ "$STORED_SHA" = "$PAYLOAD_SHA" ] && continue   # byte-identical — no churn
+                # Draft until reviewed (Greg's rule, 2026-08-12): changed
+                # content is unreviewed content. A canonical twin that changes
+                # drops back to draft, stamped with when it lost canonical so
+                # the reviewer can see it had been reviewed before.
+                EX_STATUS=$(tr -d '\r' < "$EXISTING" | awk '/^---[[:space:]]*$/ {c++; next} c==1 && /^status:/ {sub(/^status:[[:space:]]*/, ""); print; exit}')
+                EX_PREV=$( (grep -m1 '^previously_canonical:' "$EXISTING" || true) | tr -d '\r' | sed 's/^previously_canonical:[[:space:]]*//')
+                if [ "$EX_STATUS" = "canonical" ]; then
+                  STATUS_OUT="draft"
+                  PREV_OUT="$NOW_ISO"
+                  CHANGE_NOTE="Synced from ${REPO_NAME} PR #${SRC_PR} (merge ${SHORT_MERGE}) — content changed since last review; back to draft pending re-review."
+                else
+                  STATUS_OUT="${EX_STATUS:-draft}"
+                  PREV_OUT="$EX_PREV"
+                  CHANGE_NOTE="Synced from ${REPO_NAME} PR #${SRC_PR} (merge ${SHORT_MERGE})."
+                fi
+                RELFILE="$EXISTING"
+                SUBMITTED=$( (grep -m1 '^submitted:' "$EXISTING" || true) | tr -d '\r' | sed "s/^submitted:[[:space:]]*//; s/^'//; s/'\$//")
+                [ -n "$SUBMITTED" ] || SUBMITTED="$NOW_ISO"
+                tr -d '\r' < "$EXISTING" | awk '
+                  BEGIN { n = split("title department topic status submitted tags source updated updated_by change_note docs_sha256 previously_canonical", a, " "); for (i = 1; i <= n; i++) owned[a[i]] = 1 }
+                  /^---[[:space:]]*$/ { c++; next }
+                  c != 1 { next }
+                  /^[^[:space:]]/ { key = $0; sub(/:.*$/, "", key); skip = (key in owned) }
+                  !skip { print }
+                ' > "$RUNNER_TEMP/preserved.txt"
+              else
+                STATUS_OUT="draft"
+                PREV_OUT=""
+                RELFILE="${RELDIR}/${TODAY}-${KEY}.md"
+                SUBMITTED="$NOW_ISO"
+                CHANGE_NOTE="Doc-set twin created from ${REPO_NAME} PR #${SRC_PR} (merge ${SHORT_MERGE})."
+                : > "$RUNNER_TEMP/preserved.txt"
+              fi
+
+              {
+                printf -- '---\n'
+                printf 'title: "%s"\n' "$TITLE"
+                printf 'department: %s\n' "$WIKI_DEPT"
+                printf 'topic: %s\n' "$TOPIC"
+                printf 'status: %s\n' "$STATUS_OUT"
+                printf 'submitted: %s\n' "$SUBMITTED"
+                if ! grep -q '^submitter:' "$RUNNER_TEMP/preserved.txt"; then
+                  printf 'submitter: %s\n' "$SUBMITTER"
+                fi
+                printf "tags:\n  - docset\n  - 'wiki-series:%s'\n  - %s\n" "$REPO_SLUG" "$REPO_SLUG"
+                printf 'source: >-\n  Doc-set twin of %s in %s, auto-synced on merge to main by the\n  promote-learnings Action.\n' "$SRCFILE" "$REPO_NAME"
+                printf 'updated: %s\n' "$NOW_ISO"
+                printf 'updated_by: promote-learnings action (%s)\n' "$MERGER"
+                printf 'change_note: "%s"\n' "$CHANGE_NOTE"
+                printf 'docs_sha256: %s\n' "$PAYLOAD_SHA"
+                if [ -n "${PREV_OUT:-}" ]; then
+                  printf 'previously_canonical: %s\n' "$PREV_OUT"
+                fi
+                if ! grep -q '^owner:' "$RUNNER_TEMP/preserved.txt"; then
+                  printf 'owner: "%s"\n' "$OWNER_NAME"
+                fi
+                cat "$RUNNER_TEMP/preserved.txt"
+                printf -- '---\n\n'
+                printf '> Doc-set twin of [`%s`](%s/blob/main/%s) — the repo copy is the\n' "$SRCFILE" "$REPO_URL" "$SRCFILE"
+                printf '> source of truth; amend it in a code PR. Synced at merge %s ([PR #%s](%s/pull/%s)).\n\n' "$SHORT_MERGE" "$SRC_PR" "$REPO_URL" "$SRC_PR"
+                printf '<!-- docset -->\n'
+                cat "$RUNNER_TEMP/doc-body.md"
+              } > "$RELFILE"
+
+              git add "$RELFILE"
+              printf '%s -> %s\n' "$SRCFILE" "$RELFILE" >> "$SYNCED"
+            done < "$RUNNER_TEMP/docfiles.txt"
+          }
+
+          upsert_all
+          if git diff --cached --quiet; then
+            echo "Doc-set twins already current — nothing to commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "docset: ${REPO_NAME} docs/wiki sync (PR #${SRC_PR}, merge ${SHORT_MERGE})"
+          # Same push-retry discipline as the draft job: rebase on a race; if
+          # that conflicts, reset to the new main and regenerate everything.
+          ok=false
+          for i in 1 2 3; do
+            if git push origin main; then ok=true; break; fi
+            if ! git pull --rebase origin main; then
+              git rebase --abort 2>/dev/null || true
+              git reset --hard origin/main
+              upsert_all
+              git diff --cached --quiet || git commit -m "docset: ${REPO_NAME} docs/wiki sync (PR #${SRC_PR}, merge ${SHORT_MERGE})"
+            fi
+          done
+          "$ok" || { echo "Push to fc-wiki failed after 3 attempts" >&2; exit 1; }
+
+          {
+            echo "### Doc-set twins synced"
+            sed 's/^/- `/; s/$/`/' "$SYNCED"
+            echo ""
+            echo "Twins stay \`draft\` until reviewed; canonical twins whose content changed dropped back to \`draft\` (stamped \`previously_canonical\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
