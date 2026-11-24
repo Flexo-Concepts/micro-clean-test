@@ -1,8 +1,5 @@
 # Changelog
 
-## 2026-11-24 - Homepage search uses flexoconcepts.com
-- The three search boxes on the homepage now send searches to `https://www.flexoconcepts.com/`, because micro-clean.com has no search of its own.
-
 ## 2026-11-24 - Setup fixes
 - Worker name in `wrangler.jsonc` set to `micro-clean-test` to match Cloudflare (PR #2).
 - Cloudflare reconnected to the repo after it moved into the Flexo-Concepts org, and Cloudflare's GitHub app given access to micro-clean-test so merges trigger builds.
