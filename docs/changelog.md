@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-24 - SEO setup: micro-clean.com ranks on its own
+- **Canonical:** the homepage's canonical and hreflang tags now point to `https://micro-clean.com/` instead of `https://www.flexoconcepts.com/microclean_support/`, so Google can rank micro-clean.com in its own right (Michelle's decision). The Contact Us page still points to flexoconcepts.com, because it is a copy of that page.
+- **Structured data:** the homepage now describes itself to search engines and AI answer engines as a WebSite + WebPage, with the three "How MicroClean support works" steps as a HowTo. All of it is taken from the page's existing copy. The sitewide Flexo Concepts Organization data gets an `@id` so the two link up.
+- **Tidy-up:** removed the duplicate description and social-share tags left over from WordPress, and set the social-share type to "website".
+- **Sitemap:** new `public/sitemap.xml` lists the homepage, and `robots.txt` now points to it. Contact Us is left out of the sitemap, because its canonical is on flexoconcepts.com.
+
 ## 2026-11-24 - New MicroClean Support homepage; support form moves to Contact Us
 - The micro-clean.com homepage (`public/index.html`) is now the Claude Design "MicroClean Support Page Redesign": hero, "How MicroClean support works" in three steps, the anilox cleaning supplies / accessories callout and a closing call to action. It keeps the site's existing header.
 - Both "Submit a support request" buttons go to the support-form page at `/contact-us/` (same tab). "See accessories" links to `https://www.flexoconcepts.com/accessories/`.
