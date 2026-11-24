@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-24 - Simpler menu, no search, no footer
+- The top menu (desktop, sticky and mobile) now has only **Home**, which still links to `https://www.flexoconcepts.com/`, with no search icon or search box. Applications, Products, Resources, About Us, MicroClean, Contact Us and Order Online were removed, along with the search icon and the three search boxes (desktop, sticky and mobile).
+- The site footer was removed entirely, including the "High Performance Doctor Blades" tagline, the Markets / TruPoint / Company link columns, Order Online and the "© 2026 Flexo Concepts | All Rights Reserved" line.
+
 ## 2026-11-24 - Homepage search uses flexoconcepts.com
 - The three search boxes on the homepage now send searches to `https://www.flexoconcepts.com/`, because micro-clean.com has no search of its own (PR #6).
 
