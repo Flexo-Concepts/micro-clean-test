@@ -2,8 +2,8 @@
 
 ## 2026-11-24 - Setup fixes
 - Worker name in `wrangler.jsonc` set to `micro-clean-test` to match Cloudflare (PR #2).
-- Cloudflare reconnected to the repo after it moved into the Flexo-Concepts org.
-- Docs moved into `docs/` and updated for the `micro-clean-test` preview addresses and the review rule on `main`.
+- Cloudflare reconnected to the repo after it moved into the Flexo-Concepts org, and Cloudflare's GitHub app given access to micro-clean-test so merges trigger builds.
+- Docs moved into `docs/` and updated for the `micro-clean-test` preview addresses and the review rule on `main` (PR #4).
 
 ## 2026-11-23 - Version 1: MicroClean page as the micro-clean.com homepage
 - `public/index.html` is the HTML copy of `www.flexoconcepts.com/microclean_support/` from FC-HTML-Website, with the 63 images, styles, fonts and scripts it uses copied into `public/assets/` at the same paths (PR #1).
